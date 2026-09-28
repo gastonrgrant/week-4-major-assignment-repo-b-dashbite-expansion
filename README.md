@@ -76,7 +76,7 @@ Rejected: leave `runuser` in front of the service command. It receives Docker's 
 
 ## Roles
 
-The architect chat confirmed Stage 7 was already in `docs/plan.md` and did not add a second copy or implement the containers. In that same chat it appended Stage 8 and implemented the training cursor and full refit. That stage's smoke published `late_v021.joblib`.
+The architect chat reviewed Stage 7 against the containers already in the repo and revised only that section. The plan now says Docker's `SIGTERM` reaches the worker because the entrypoint uses `exec setpriv`, and the smoke test proves `simulator stopped` and exit 0. One simulator stop covers preprocess, train, and infer. That chat did not change code.
 
 The builder chat found the container stack already in place. It changed the entrypoint from `runuser` to `setpriv` so Docker's SIGTERM reaches the worker, which then finishes the current pass and exits. `make test` and `make docker-test` each passed 40 tests. That chat did not rerun the Stage 7 smoke after the fix.
 

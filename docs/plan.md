@@ -435,51 +435,68 @@ Ctrl+C in Terminal 5, then 4, 3, 2, and 1.
 
 ### Goal
 
-Run the same five processes in containers, with data that survives a restart, a health check, and a stop signal Docker actually sends. The earlier plain-Python demo stays available through `make run`.
+Run the same five processes in containers. The named volume survives `make docker-down`. Compose can tell a worker is alive. Docker sends `SIGTERM` to the worker, the worker finishes the pass it is already in, and then it exits. `make run` stays the plain-Python demo.
 
 ### Proposed changes
 
-- [`Dockerfile`](Dockerfile): Python 3.11 slim, non-root user, one image for every service.
-- [`docker-compose.yml`](docker-compose.yml): `simulator`, `preprocess`, `train`, `infer`, and `dashboard` on port 8501. A named volume is mounted at `/data` via the existing `DASHBITE_DATA_ROOT`. A `test` service runs pytest and is not part of `up`.
-- Worker loops handle `SIGTERM` and `SIGINT`, finish the current pass, and exit. Each pass touches a heartbeat file. Compose treats a stale heartbeat as unhealthy. The dashboard health check calls Streamlit's `/_stcore/health`.
-- [`Makefile`](Makefile): `make docker-up`, `make docker-down`, `make docker-test`.
+- [`Dockerfile`](Dockerfile): `python:3.11-slim`, one image (`dashbite:local`) for every service. Install the project with the dev extra so the image can run the workers and pytest. Copy `pipeline/` and `tests/`. The image user stays root. `DASHBITE_DATA_ROOT=/data`.
+- [`docker-entrypoint.sh`](docker-entrypoint.sh): create `/data`, give it to `dashbite` (uid 1000), set `HOME`, then `exec setpriv --reuid=dashbite --regid=dashbite --init-groups --` the service command. `setpriv` replaces itself with that command, so the worker is the process Docker signals. `runuser` stays in front of the command, receives `SIGTERM`, and kills the session before the current pass can finish.
+- [`pipeline/runtime.py`](pipeline/runtime.py): `StopFlag.install` handles `SIGTERM` and `SIGINT` by setting a flag. The handler does not raise. `wait` returns as soon as the flag is set. `touch_heartbeat` writes `<DASHBITE_DATA_ROOT>/.heartbeats/<stage>`. `heartbeat_fresh` is false when that file is missing or older than `HEARTBEAT_MAX_AGE_SECONDS` (default 45).
+- Simulator, preprocess, train, and infer each use one loop. While the flag is clear, run one pass, touch that stage's heartbeat, then `stop.wait(POLL_INTERVAL_SECONDS)`. A signal during the pass lets that pass return, writes the heartbeat, wakes the wait, and leaves the loop. A signal during the wait does not start another pass. The process then logs `<stage> stopped` and exits 0.
+- [`pipeline/health.py`](pipeline/health.py): `python -m pipeline.health <stage>` exits 0 when that heartbeat is fresh and exits 1 when it is missing or stale.
+- [`docker-compose.yml`](docker-compose.yml): `simulator`, `preprocess`, `train`, `infer`, and `dashboard`. Named volume `dashbite-data` mounted at `/data`. Environment: `DASHBITE_DATA_ROOT=/data`, `POLL_INTERVAL_SECONDS` (default 15), `TRAIN_EVERY_N_EVENTS` (default 2000), `BATCH_SIZE` (default 50), `HEARTBEAT_MAX_AGE_SECONDS=45`. `stop_grace_period: 20s`. Each worker health check runs `python -m pipeline.health <stage>` (interval 20s, timeout 5s, retries 3, start period 30s). Dashboard publishes port 8501 and checks `http://127.0.0.1:8501/_stcore/health` (start period 40s, retries 5). The `test` service is on profile `test`, mounts no volume, and runs pytest. It is not part of `up`.
+- [`Makefile`](Makefile): `make docker-up` is `docker compose up --build -d`. `make docker-down` is `docker compose down` and does not pass `-v`. `make docker-test` is `docker compose run --rm --no-deps test`.
 
 ### Architecture / boundaries
 
-- Containers do not import each other. They still meet only through files, now on a shared volume.
-- `DASHBITE_DATA_ROOT` stays the one path setting. Compose points it at `/data` instead of adding a second path system.
+- Containers do not import each other. They still meet only through files on the shared volume.
+- `DASHBITE_DATA_ROOT` stays the one path setting. Compose points it at `/data`.
 - No queue and no database. The file handoff stays the API.
+- Docker sends `SIGTERM` to the container's main process and, after `stop_grace_period` (20s), `SIGKILL`. The entrypoint has to `exec` so that main process is the worker. The handler only sets a flag, so the pass already running — a batch, a feature file, a publish, or a score — finishes and its file is complete before the process logs `<stage> stopped`. Preprocess, train, and infer use that same `StopFlag` loop. One simulator stop is enough to prove those three. Streamlit handles its own `SIGTERM`, so the smoke test does not stop all five.
+- The heartbeat is written after the pass, then the worker sleeps. `POLL_INTERVAL_SECONDS` stays under 45 in the running stack, or a quiet worker looks unhealthy. The classroom default is 15. The 60-second poll in the smoke test is only for the stop proof, and only on `simulator`.
+- `make docker-test` uses the image from the last build and does not start the five services. `make docker-up` rebuilds that image.
 
 ### Automated tests
 
-- Unit: the stop helper sets its flag on `SIGTERM`. A fresh heartbeat passes and a stale one fails.
-- Regression: an unset `DASHBITE_DATA_ROOT` still resolves `data`, and Compose sets `/data` for the workers.
-- Integration: `make test` remains the local gate. `make docker-test` is the container gate when Docker is available.
+- Unit: `SIGTERM` and `SIGINT` set the stop flag. `SIGTERM` during `wait` returns before the timeout. A fresh heartbeat passes. A missing heartbeat and one older than 45 seconds fail. `python -m pipeline.health simulator` returns when the file is fresh and exits 1 when it is missing or stale.
+- Regression: an unset `DASHBITE_DATA_ROOT` still resolves `data`. Compose sets `DASHBITE_DATA_ROOT: /data` and mounts `dashbite-data:/data` for the five services. The entrypoint contains `exec setpriv --reuid=dashbite --regid=dashbite --init-groups --` and does not contain `exec runuser`.
+- Integration: `make test` is the local gate. `make docker-test` is the container gate when Docker is available.
 
 ### Manual Smoke Test
 
 #### What we're proving
 
-`make docker-up` builds and starts the stack, the dashboard health URL responds, new order files land on the volume, and `make docker-down` stops the containers.
+`make docker-up` starts the five services, the dashboard health URL responds, order files land on the volume, and `SIGTERM` lets the simulator finish and exit 0. Preprocess, train, and infer use the same `StopFlag` loop, so that one simulator stop proves them too. Streamlit handles its own `SIGTERM`, so this smoke test does not stop all five. `make docker-down` removes the containers and keeps the volume.
 
 #### Terminal
 
 ```bash
 make docker-up
 docker compose ps
-docker compose logs simulator
 curl -fsS http://127.0.0.1:8501/_stcore/health
+docker compose logs simulator
 docker compose exec simulator ls /data/raw
+POLL_INTERVAL_SECONDS=60 docker compose up -d --no-deps --force-recreate simulator
+```
+
+After that new simulator logs `new orders arrived`, and before a minute has passed:
+
+```bash
+docker compose stop -t 15 simulator
+docker compose logs --tail 30 simulator
+docker compose ps -a simulator
 make docker-down
-docker compose ps
+docker compose ps -a
+docker volume ls
 ```
 
 #### Watch for
 
-- All five services are running, and the dashboard health check becomes healthy.
-- `curl` prints the Streamlit health body.
-- `/data/raw` lists order CSVs.
-- After `make docker-down`, `docker compose ps` shows no running DashBite containers. The named volume is kept.
+- `docker compose ps` shows `simulator`, `preprocess`, `train`, `infer`, and `dashboard` running. `test` is absent. The dashboard becomes healthy.
+- `curl` prints `ok`.
+- The simulator log contains `new orders arrived`, and `/data/raw` lists order CSVs.
+- After `docker compose stop -t 15 simulator`, the log shows `simulator stopped` after the last `new orders arrived` line. `docker compose ps -a` shows `Exited (0)`. The stop returns inside 15 seconds while the poll is 60, so the worker handled `SIGTERM` and Docker did not send `SIGKILL`. Preprocess, train, and infer are still running. That one stop is enough, because they use the same loop. The dashboard is still running too. Streamlit handles its own `SIGTERM`.
+- After `make docker-down`, no DashBite containers are listed. `docker volume ls` still lists `dashbite_dashbite-data`.
 
 #### Stop
 
