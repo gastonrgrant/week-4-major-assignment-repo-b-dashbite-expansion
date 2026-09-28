@@ -1,8 +1,18 @@
 # DashBite
 
-Option 1. DashBite predicts whether a food-delivery order will be late. The simulator writes raw orders, preprocess cleans them, train publishes a versioned checkpoint, and infer scores new rows from the newest checkpoint on disk. Model Pulse is a Streamlit page that only reads those files.
+## Project overview
 
-Stages do not import each other. They hand off through folders under the data root. The Makefile is the way to install, run, and test.
+This is Option 1. DashBite predicts whether a food-delivery order will be late. Each raw order has `order_id`, `timestamp`, `distance_km`, `prep_minutes`, `order_value`, and `was_late`.
+
+Five programs run separately and do not import each other. They hand off only through files:
+
+- The simulator writes order files.
+- Preprocess drops invalid rows and writes feature files. It keeps `was_late`.
+- Train fits a logistic regression on `distance_km` and `prep_minutes`, then publishes the next versioned checkpoint.
+- Infer reads the newest checkpoint on disk and scores new feature files. It keeps scoring if training is not running.
+- Model Pulse is a Streamlit page. It only reads files already on disk: how many orders arrived, what share were flagged late, and which fields failed cleaning.
+
+The Makefile is the way to install, run, and test. In containers, the same five programs share one data volume. `DASHBITE_DATA_ROOT` is the only path setting.
 
 ## Install
 
@@ -62,17 +72,19 @@ The simulator log recorded `new orders arrived: 50 rows` for:
 
 `make docker-down` removed all five containers. `docker compose ps` showed nothing running. The volume `dashbite_dashbite-data` was still present.
 
-## How the work was checked
+## How the work was verified personally
 
-The tester's final gates were 43 passed from `make test` on the host and 43 passed from `make docker-test` on Python 3.11.16 inside `dashbite:local`. With `POLL_INTERVAL_SECONDS=60`, `docker compose stop -t 15 simulator` logged `simulator stopped` and the container exited 0. The smoke test section above is a separate run from the DashBite folder.
+I ran the smoke test above myself on 2026-09-28, in a terminal, separate from the tester chat.
+
+## How the Tester checked the work
+
+The tester's final gates were 43 passed from `make test` on the host and 43 passed from `make docker-test` on Python 3.11.16 inside `dashbite:local`. With `POLL_INTERVAL_SECONDS=60`, `docker compose stop -t 15 simulator` logged `simulator stopped` and the container exited 0. The Smoke test section is that separate run.
 
 ## Recommendations
 
-Accepted: keep `DASHBITE_DATA_ROOT` as the only path setting and mount the named volume at `/data`. Compose points the existing variable at the volume.
+The tester recommended four new tests. I accepted three: the health command exits 0 on a fresh heartbeat and 1 when the file is missing or older than 45 seconds in order to lock the signal Docker uses; peak hours stay on at 11, 13, 17, and 20 and off at 10, 14, 16, and 21 in order to make sure the correct hours were being labeled as peak; a batch of only on-time rows publishes no checkpoint. I rejected the messy-row test, because the test suite already covers messy data.
 
-Rejected: replace the file handoff with a queue or a database. The stages still meet only through files on the shared volume.
-
-Rejected: leave `runuser` in front of the service command. It receives Docker's SIGTERM and kills the session before the worker finishes the current pass. The entrypoint uses `setpriv` so the worker is the process that handles the signal.
+The builder recommended leaving the 45-second heartbeat rule as it is. I agreed. A 15-second poll stays inside that limit, so the cutoff did not need to follow the poll.
 
 ## Roles
 
@@ -80,6 +92,6 @@ The architect chat reviewed Stage 7 against the containers already in the repo a
 
 The builder chat found the container stack already in place. It changed the entrypoint from `runuser` to `setpriv` so Docker's SIGTERM reaches the worker, which then finishes the current pass and exits. `make test` and `make docker-test` each passed 40 tests. That chat did not rerun the Stage 7 smoke after the fix.
 
-The tester chat checked Stage 7 against the plan. `make docker-up` started all five services healthy, the dashboard health URL printed `ok`, and the simulator log showed a new order file. With a 60-second poll, `docker compose stop -t 15 simulator` logged `simulator stopped` and exited 0. The tester then added three tests as Stage 9. The final gates were 43 passed on the host and 43 passed in the container.
+The tester chat checked Stage 7 against the plan, ran the checks in **How the Tester checked the work**, and added the three tests from **Recommendations** as Stage 9.
 
 The chats are committed as `docs/transcripts/architect.txt`, `docs/transcripts/builder.txt`, and `docs/transcripts/tester.txt`. The same files are also saved as `grg27_architect.txt`, `grg27_builder.txt`, and `grg27_tester.txt`. Upload those three chats to Canvas separately.
