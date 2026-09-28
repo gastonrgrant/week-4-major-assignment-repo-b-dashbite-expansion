@@ -94,4 +94,4 @@ The builder chat found the container stack already in place. It changed the entr
 
 The tester chat checked Stage 7 against the plan, ran the checks in **How the Tester checked the work**, and added the three tests from **Recommendations** as Stage 9.
 
-The chats are committed as `docs/transcripts/architect.txt`, `docs/transcripts/builder.txt`, and `docs/transcripts/tester.txt`. The same files are also saved as `grg27_architect.txt`, `grg27_builder.txt`, and `grg27_tester.txt`. Upload those three chats to Canvas separately.
+The chats are committed as `docs/transcripts/architect.txt`, `docs/transcripts/builder.txt`, and `docs/transcripts/tester.txt`. The same files are also saved as `grg27_architect.txt`, `grg27_builder.txt`, and `grg27_tester.txt`
