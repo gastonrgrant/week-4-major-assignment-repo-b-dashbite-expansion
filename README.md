@@ -82,4 +82,4 @@ The builder chat found the container stack already in place. It changed the entr
 
 The tester chat checked Stage 7 against the plan. `make docker-up` started all five services healthy, the dashboard health URL printed `ok`, and the simulator log showed a new order file. With a 60-second poll, `docker compose stop -t 15 simulator` logged `simulator stopped` and exited 0. The tester then added three tests as Stage 9. The final gates were 43 passed on the host and 43 passed in the container.
 
-The chats are `docs/transcripts/grg27_architect.txt`, `docs/transcripts/grg27_builder.txt`, and `docs/transcripts/grg27_tester.txt`.
+The chats are committed as `docs/transcripts/architect.txt`, `docs/transcripts/builder.txt`, and `docs/transcripts/tester.txt`. The same files are also saved as `grg27_architect.txt`, `grg27_builder.txt`, and `grg27_tester.txt`. Upload those three chats to Canvas separately.
