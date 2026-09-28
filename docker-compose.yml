@@ -1,0 +1,97 @@
+name: dashbite
+
+x-app: &app
+  build: .
+  image: dashbite:local
+  environment: &app-env
+    DASHBITE_DATA_ROOT: /data
+    POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-15}
+    TRAIN_EVERY_N_EVENTS: ${TRAIN_EVERY_N_EVENTS:-2000}
+    BATCH_SIZE: ${BATCH_SIZE:-50}
+    HEARTBEAT_MAX_AGE_SECONDS: "45"
+  volumes:
+    - dashbite-data:/data
+  stop_grace_period: 20s
+  restart: unless-stopped
+
+x-worker-health: &worker-health
+  interval: 20s
+  timeout: 5s
+  retries: 3
+  start_period: 30s
+
+services:
+  simulator:
+    <<: *app
+    command: ["python", "-m", "pipeline.simulator"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "pipeline.health", "simulator"]
+
+  preprocess:
+    <<: *app
+    command: ["python", "-m", "pipeline.preprocess"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "pipeline.health", "preprocess"]
+
+  train:
+    <<: *app
+    command: ["python", "-m", "pipeline.train"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "pipeline.health", "train"]
+
+  infer:
+    <<: *app
+    command: ["python", "-m", "pipeline.infer"]
+    healthcheck:
+      <<: *worker-health
+      test: ["CMD", "python", "-m", "pipeline.health", "infer"]
+
+  dashboard:
+    <<: *app
+    command:
+      [
+        "python",
+        "-m",
+        "streamlit",
+        "run",
+        "pipeline/dashboard.py",
+        "--server.port",
+        "8501",
+        "--server.address",
+        "0.0.0.0",
+        "--server.headless",
+        "true",
+        "--server.fileWatcherType",
+        "none",
+        "--browser.gatherUsageStats",
+        "false",
+      ]
+    ports:
+      - "8501:8501"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3)",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  test:
+    <<: *app
+    profiles: ["test"]
+    restart: "no"
+    environment:
+      POLL_INTERVAL_SECONDS: "15"
+    command: ["python", "-m", "pytest"]
+    volumes: []
+
+volumes:
+  dashbite-data:

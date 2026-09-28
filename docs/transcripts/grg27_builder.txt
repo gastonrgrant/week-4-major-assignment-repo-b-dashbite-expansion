@@ -1,0 +1,310 @@
+# Stage 7 implementation plan
+_Exported on 9/28/2026 at 15:24:32 EDT from Cursor (3.22.7)_
+
+---
+
+```
+STUDENT_NAME: Gaston Grant
+NETID: grg27
+OPTION: 1
+ROLE: Builder
+AGENT_TOOL: Cursor-Grok 4.7
+REPOSITORY_B_URL: https://github.com/gastonrgrant/week-4-major-assignment-repo-b-dashbite-expansion
+===== TRANSCRIPT START =====
+```
+
+
+**User**
+
+You are the builder. Ignore previous chat. Read the repo and docs/plan.md, focusing on Stage 7. Implement that stage. Keep the change scoped, add the tests it names, and run them. Do not rewrite docs/plan.md from scratch. If the stage is already implemented, check it against the plan and fix only real gaps.2. Builder
+Start a new conversation and give the Builder the Architect’s plan.
+
+The Builder should:
+
+Implement the plan
+
+Update or create appropriate files
+
+Add or update tests
+
+Update documentation
+
+Explain important implementation decisions
+
+---
+
+**Cursor**
+
+I'll follow the build-cycle skill and implement Stage 7 from the plan, starting by reading that skill and the stage itself.
+
+Stage 7 is containerization: one image, Compose for the five processes, heartbeats, and graceful stop. I'll inspect the repo and see how much of that is already in place.
+
+Stage 7 is already in the repo. I'll check it against the plan, starting with whether Docker's stop signal actually reaches the worker processes.
+
+`runuser` receives Docker's SIGTERM and kills the session before the worker can finish its current pass. I'll switch the entrypoint so the service process itself handles that signal.
+
+Local tests passed: 40. Next I’ll rebuild the image and run the container suite, then check that SIGTERM lets a worker finish its pass.
+
+Stage 7 was already in the repo. The container stack, heartbeat checks, and tests matched the plan. One stop path did not: `runuser` received Docker's SIGTERM and killed the session before the worker could finish its current pass.
+
+The entrypoint now prepares `/data` as root, then replaces itself with `setpriv` so the service command runs as `dashbite` and receives that signal. `HOME` stays `/home/dashbite`. `DASHBITE_DATA_ROOT=/data` is unchanged, and `make run` is unchanged.
+
+`make test` passed 40 tests. `make docker-test` passed the same 40 on Python 3.11.16. With the poll set to 60 seconds, `docker compose stop -t 15 simulator` logged `simulator stopped` and the container exited 0.
+
+---
+
+**User**
+
+explain to me what you just did so that I can verify you did the correct operations
+
+---
+
+**Cursor**
+
+I'll walk through the Stage 7 change against the files as they are now, so you can check each step.
+
+Stage 7 was already built. The only real gap was how a container stops. Docker sends `SIGTERM`, and the old entrypoint used `runuser`, which sits in front of the worker, receives that signal, and kills the session before the worker can finish the pass it is on.
+
+## What was already in place
+
+These already matched the plan, so I left them alone:
+
+- `Dockerfile` uses Python 3.11 slim, one image, and a non-root user named `dashbite`.
+- `docker-compose.yml` runs `simulator`, `preprocess`, `train`, `infer`, and `dashboard` on port 8501, mounts a named volume at `/data`, and sets `DASHBITE_DATA_ROOT=/data`. The `test` service is behind a Compose profile, so `make docker-up` does not start it.
+- `pipeline/runtime.py` handles `SIGTERM` and `SIGINT`. The four worker loops check that flag, finish the current pass, and touch a heartbeat. Compose treats a stale heartbeat as unhealthy. The dashboard check calls Streamlit's `/_stcore/health`.
+- `make docker-up`, `make docker-down`, and `make docker-test` were already in the Makefile.
+- `docs/plan.md` was not rewritten.
+
+## The change
+
+`docker-entrypoint.sh` still creates `/data` and gives it to `dashbite` as root. It then replaces itself with the service command:
+
+```10:10:docker-entrypoint.sh
+exec setpriv --reuid=dashbite --regid=dashbite --init-groups -- "$@"
+```
+
+`setpriv` switches to uid 1000 and then execs the command, so the worker is the process that receives `SIGTERM`. `HOME`, `USER`, and `LOGNAME` are set to the `dashbite` account so Streamlit does not try to write under `/root`. Pipeline settings such as `DASHBITE_DATA_ROOT` are left in the environment.
+
+In the `Dockerfile`, the entrypoint copy was moved to after `pip install`. That does not change runtime behavior. It only keeps a later entrypoint edit from reinstalling dependencies.
+
+## Tests added
+
+- `tests/unit/test_runtime.py`: `SIGINT` sets the stop flag, and `SIGTERM` wakes a waiting worker in well under two seconds. Both tests restore the previous signal handlers.
+- `tests/regression/test_compose.py`: the entrypoint exports `HOME=/home/dashbite`, execs that `setpriv` line, and does not exec `runuser`.
+
+## What I ran
+
+- `make test`: 40 passed on the host.
+- `docker compose build`, then `make docker-test`: 40 passed on Python 3.11.16 inside `dashbite:local`.
+- A stop check, not the full five-service smoke: `POLL_INTERVAL_SECONDS=60 docker compose up -d simulator`, then `docker compose stop -t 15 simulator`. The log contained `simulator stopped`, and the container exited 0 instead of waiting out the 60-second poll. `docker compose down` removed that container and left the volume `dashbite_dashbite-data`.
+- `docker run --rm dashbite:local python -c ...` printed uid `1000`, `HOME=/home/dashbite`, and `DASHBITE_DATA_ROOT=/data`.
+
+`docker compose exec` is not a valid check of the user. Exec skips the entrypoint and runs as root. The main process is the one `setpriv` starts.
+
+---
+
+**User**
+
+and you used the architects plan which is the plan.md correct?
+
+---
+
+**Cursor**
+
+Yes. The handoff was `docs/plan.md`, and the work was Stage 7, "Containerize."
+
+That section asks for one Python 3.11 image, Compose services for the five processes with data on a named volume at `/data` through `DASHBITE_DATA_ROOT`, a `test` service that `make docker-up` does not start, worker loops that finish the current pass on `SIGTERM` and `SIGINT`, heartbeat health checks, Streamlit's `/_stcore/health` for the dashboard, and the `make docker-up`, `make docker-down`, and `make docker-test` targets. The tests it names are the stop-flag and heartbeat checks, the default `data` path when `DASHBITE_DATA_ROOT` is unset, Compose pointing workers at `/data`, plus `make test` and `make docker-test`.
+
+Those pieces were already in the repo. The gap against that same section was the stop signal: `runuser` was killed before the worker could finish its pass. The entrypoint change is the fix for that requirement. `docs/plan.md` was not rewritten.
+
+---
+
+**User**
+
+was there anything that did not go according to plan that you found?
+
+---
+
+**Cursor**
+
+One thing in the running container did not match Stage 7. The rest of that stage was already in place.
+
+The plan says a worker handles `SIGTERM`, finishes the pass it is on, and then exits. The Python loops already did that: `StopFlag` sets a flag, and the loop checks it after the current pass. The entrypoint undid it. `runuser` was the process Docker signaled. It forwarded `SIGTERM` and then killed the session. A test handler printed that it had received signal 15, slept three seconds, and was killed before it could finish. The container exited 143. After the `setpriv` change, the same check logged `simulator stopped` and exited 0, with the poll set to 60 seconds so a missed signal would have been obvious.
+
+The tests named in the plan did not catch that. They check the stop helper and the heartbeat file, not the process Docker actually signals. That is why the suite could pass while `docker compose stop` still cut the worker off.
+
+Two smaller mismatches stayed as they are:
+
+- The full Stage 7 smoke — all five services, the Streamlit health URL, and order files on the volume — was not run again after the entrypoint change. The stop check covered only the simulator.
+- A worker is marked unhealthy when its heartbeat is older than 45 seconds. The default poll is 15 seconds, so the normal demo stays healthy. A longer `POLL_INTERVAL_SECONDS` can make a live worker look unhealthy. The plan does not ask that threshold to follow the poll.
+
+---
+
+**User**
+
+did you correct the issue or does it still need to be corrected?
+
+---
+
+**Cursor**
+
+The stop-signal issue is already corrected. `docker-entrypoint.sh` no longer uses `runuser`. It execs the service command with `setpriv` as `dashbite`, and a live check confirmed that `docker compose stop` lets the simulator log `simulator stopped` and exit 0.
+
+What is still open is only the check I did not repeat: the full five-service smoke from Stage 7 (dashboard health URL and order files on the volume). The heartbeat limit of 45 seconds was left as specified; it does not need a code change for the default 15-second poll.
+
+---
+
+**User**
+
+which test cases did you add or update?
+
+---
+
+**Cursor**
+
+Three test functions were added, and one existing test was updated. No integration tests changed.
+
+**Updated** in `tests/unit/test_runtime.py`:
+
+- `test_sigterm_sets_stop_flag` still asserts that `SIGTERM` sets the stop flag. It now also saves and restores the `SIGINT` handler. `StopFlag.install()` replaces both, and the old test only put `SIGTERM` back.
+
+**Added** in `tests/unit/test_runtime.py`:
+
+- `test_sigint_sets_stop_flag` sends `SIGINT` and asserts the flag is set, then restores both handlers.
+- `test_sigterm_wakes_wait` sends `SIGTERM` while the flag is waiting and asserts the wait returns within 2 seconds.
+
+`test_fresh_heartbeat_passes_and_stale_fails` and `test_missing_heartbeat_fails` were already there and were not edited.
+
+**Added** in `tests/regression/test_compose.py`:
+
+- `test_entrypoint_execs_worker_as_dashbite` reads `docker-entrypoint.sh` and asserts it exports `HOME=/home/dashbite`, execs `setpriv` as `dashbite`, and does not exec `runuser`.
+
+`test_default_data_root_stays_data` and `test_compose_points_workers_at_data_volume` were already there and were not edited.
+
+---
+
+**User**
+
+explain the important implementation decisions you made in very simple language
+
+---
+
+**Cursor**
+
+The container already matched the plan, so the only behavior change was how it stops.
+
+Docker stops a container by signaling the first process inside it. That process used to be `runuser`. `runuser` got the signal and killed the worker immediately. The worker never got to finish the batch it was writing.
+
+The entrypoint now does three things, in order:
+
+1. It starts as root just long enough to create `/data` and give that folder to the `dashbite` user. A normal user cannot do that on a fresh Docker volume.
+2. It sets the home directory to `/home/dashbite`. Otherwise the app would try to write under `/root` and fail.
+3. It replaces itself with the real command (`simulator`, `preprocess`, `train`, `infer`, or the dashboard), running as `dashbite`. There is no extra program left in front. Docker's stop signal goes straight to that command, the command finishes its current pass, and then it exits.
+
+The five programs still only share files on `/data`. Nothing was added between them. `make run` without Docker was left as it was.
+
+---
+
+**User**
+
+is there anything else you would suggest building? its okay if there is nothing. clearly explain your reasoning to me as I will veto or accept your decision 
+
+---
+
+**Cursor**
+
+Build nothing else. Stage 7 is in place, and the plan does not describe another feature after it.
+
+`docs/plan.md` stops at Stage 8, the train cursor. That cursor was already in `pipeline/train.py` before the container fix. The container change did not leave a missing piece from Stage 7: the image, the five services, the shared `/data` volume, the heartbeats, and the stop signal are all there.
+
+The one check still open is not new code. It is the Stage 7 manual smoke: start all five containers, open the dashboard health URL, confirm order files on the volume, and run `make docker-down`. I only stopped the simulator.
+
+There is one small behavior I would leave alone unless you want it. A worker is marked unhealthy if its heartbeat is older than 45 seconds, while the poll time can be set higher than that. The classroom default is 15 seconds, so the demo stays healthy. Changing that would be extra scope the plan does not ask for. I would veto it.
+
+---
+
+**User**
+
+you would veto what? marking unhealthy at 45 or 15 seconds?
+
+---
+
+**Cursor**
+
+I would veto building a change. I would not veto the current rule.
+
+A worker is marked unhealthy when its heartbeat is older than 45 seconds. The poll default is 15 seconds, so a healthy worker touches the file well before that cutoff. That 45-second rule is what the container setup already uses, and it matches the plan.
+
+The change I would veto is making that cutoff follow the poll. For example, if someone set the poll to 60 seconds, the worker would still be healthy, but 45 seconds would mark it unhealthy. Fixing that would be new behavior the plan does not ask for.
+
+---
+
+**User**
+
+The poll thinks 15 seconds is unhealthy?
+
+---
+
+**Cursor**
+
+No. Fifteen seconds is healthy.
+
+The poll is how often a worker wakes up and touches its heartbeat file. With the default, that happens about every 15 seconds. Compose only marks the worker unhealthy if that file is older than 45 seconds. A normal 15-second gap is well inside that limit.
+
+The awkward case is a poll longer than 45 seconds. The worker can be fine and still look unhealthy, because it waits too long between touches. The classroom default never does that.
+
+---
+
+**User**
+
+Why is dahsbite, a food delivery service, concerned with worker heartbeats?
+
+---
+
+**Cursor**
+
+The heartbeat belongs to the demo's programs, not to a courier.
+
+DashBite here is a small pipeline: one program writes orders, another cleans them, another trains, another scores, and a page reads the results. Those programs keep running in containers. Docker cannot tell a live loop from a stuck one just because the container process still exists.
+
+Each of those four programs touches a small file at the end of every pass. Compose checks that file. If it was touched in the last 45 seconds, the program is still looping. If the file is older than that, Compose marks the container unhealthy. The dashboard uses Streamlit's own health URL for the same idea, because that page is not one of those loops.
+
+---
+
+**User**
+
+okay, I agree, leave it as is
+
+---
+
+**Cursor**
+
+The 45-second heartbeat rule stays as it is. No further change.
+
+---
+
+**User**
+
+Is there any last things to make the Tester aware about?
+
+---
+
+**Cursor**
+
+The tester should know a few traps that the passing tests do not cover. I'll check the smoke steps and the transcript notes so the handoff matches them.
+
+The Tester should treat Stage 7 as already built, then check one fix the unit tests cannot see.
+
+The entrypoint used to stop the container with `runuser`. Docker’s `SIGTERM` hit `runuser`, and `runuser` killed the worker before that worker could finish its current pass. It now uses `setpriv`, so the worker itself receives the signal, finishes the pass, and exits. `make test` and `make docker-test` both passed with 40 tests, but those tests never send Docker’s stop signal. A container that only disappears is not proof. After `docker compose stop`, the simulator log should contain `simulator stopped` and the exit code should be 0. Exit code 143 means the old kill path is back.
+
+Run the Stage 7 smoke in `docs/plan.md`. It was not run again after this entrypoint change. A few things in that smoke are easy to misread:
+
+- `docker compose exec` skips the entrypoint and runs as root. `ls /data/raw` is still a valid check. Printing the user id from `exec` will show `0` even when the service itself is `dashbite` (uid 1000).
+- The named volume is kept across `make docker-down`, and it already contains old order files. A file listing alone does not prove this start wrote anything. The simulator log should show a new `new orders arrived` line.
+- The dashboard can take a little while to become healthy. Give it its startup period before treating `/_stcore/health` as a failure.
+- If `make run` is already using port 8501, the dashboard container cannot bind that port.
+- `make docker-test` runs the image from the last build. `make docker-up` rebuilds it. The image was rebuilt before the last `make docker-test`.
+- The `test` service is not supposed to appear in `docker compose ps` after `make docker-up`.
+- A heartbeat older than 45 seconds is unhealthy on purpose. The default poll is 15 seconds. That is not a bug to fix.
+- `make run` is the non-Docker demo and should still be there.
+===== TRANSCRIPT END =====

@@ -1,0 +1,240 @@
+# Stage 7 container review
+_Exported on 9/28/2026 at 15:49:01 EDT from Cursor (3.22.7)_
+
+---
+
+
+```
+STUDENT_NAME: Gaston Grant
+NETID: grg27
+OPTION: 1
+ROLE: Tester
+AGENT_TOOL: Cursor-Grok 4.7
+REPOSITORY_B_URL: https://github.com/gastonrgrant/week-4-major-assignment-repo-b-dashbite-expansion
+===== TRANSCRIPT START =====
+```
+
+
+**User**
+
+You are the tester. Ignore previous chat. Read the repo and docs/plan.md, focusing on Stage 7. Review the container implementation against that stage, run its Manual Smoke Test, and report what you found. Do not rewrite earlier stages of docs/plan.md. 4. Tester
+Start another new conversation and ask the Tester to independently review the implementation.
+
+The Tester should:
+
+Compare the result with docs/plan.md
+
+Run or inspect the test suite
+
+Check typical and edge-case behavior
+
+Identify incomplete or incorrect work
+
+Verify the setup instructions
+
+Recommend necessary corrections
+
+Fix important issues identified during testing and rerun the relevant checks.These are things to be aware about directly from the Builder: The Tester should treat Stage 7 as already built, then check one fix the unit tests cannot see.
+
+The entrypoint used to stop the container with runuser. Docker’s SIGTERM hit runuser, and runuser killed the worker before that worker could finish its current pass. It now uses setpriv, so the worker itself receives the signal, finishes the pass, and exits. make test and make docker-test both passed with 40 tests, but those tests never send Docker’s stop signal. A container that only disappears is not proof. After docker compose stop, the simulator log should contain simulator stopped and the exit code should be 0. Exit code 143 means the old kill path is back.
+
+Run the Stage 7 smoke in docs/plan.md. It was not run again after this entrypoint change. A few things in that smoke are easy to misread:
+
+docker compose exec skips the entrypoint and runs as root. ls /data/raw is still a valid check. Printing the user id from exec will show 0 even when the service itself is dashbite (uid 1000).
+The named volume is kept across make docker-down, and it already contains old order files. A file listing alone does not prove this start wrote anything. The simulator log should show a new new orders arrived line.
+The dashboard can take a little while to become healthy. Give it its startup period before treating /_stcore/health as a failure.
+If make run is already using port 8501, the dashboard container cannot bind that port.
+make docker-test runs the image from the last build. make docker-up rebuilds it. The image was rebuilt before the last make docker-test.
+The test service is not supposed to appear in docker compose ps after make docker-up.
+A heartbeat older than 45 seconds is unhealthy on purpose. The default poll is 15 seconds. That is not a bug to fix.
+make run is the non-Docker demo and should still be there.
+
+---
+
+**Cursor**
+
+I'll review Stage 7 as the tester: read the skill and plan, then check the container implementation against that stage and run the smoke test.
+
+The review role starts from the repo and Stage 7 in `docs/plan.md`, then checks the container against that contract, including the stop-signal path the unit tests cannot see.
+
+Stage 7 is the container contract. I'll inspect the image, Compose, stop path, and tests before running the smoke, including the SIGTERM check the suite cannot see.
+
+Host tests passed, 40 of them, and port 8501 is free. Next I’ll rebuild and start the stack, then run the smoke checks the unit tests cannot cover.
+
+The stack is up. I’ll wait through the dashboard startup period, then check health, a new order file, and which user the worker actually runs as.
+
+The worker is pid 1 as uid 1000, and `docker compose exec` is root, as expected. I’ll recreate the simulator on a 60-second poll and stop it, to see whether Docker’s signal reaches the worker.
+
+Stage 7 matches the plan. The container stack starts, writes new orders, answers the dashboard health check, and stops with exit code 0. I did not change any code.
+
+## Stop signal
+
+The unit tests never send Docker’s stop signal. I recreated the simulator with `POLL_INTERVAL_SECONDS=60`, waited until it logged a batch, then ran `docker compose stop -t 15 simulator`.
+
+The stop returned in 0.15 seconds. The log contained `simulator stopped`, and the container exit code was 0. Pid 1 inside that container was `python -m pipeline.simulator` as uid 1000. `setpriv` had already replaced itself, so the worker received the signal, finished the wait, and exited. The same stop on preprocess, train, infer, and the dashboard also exited 0, with `preprocess stopped`, `train stopped`, and `infer stopped` in those logs.
+
+## Smoke
+
+`make docker-up` rebuilt `dashbite:local` and started five services. `docker compose ps` showed `simulator`, `preprocess`, `train`, `infer`, and `dashboard`, all healthy. The `test` service was not listed.
+
+The dashboard was healthy on the first check, about 7 seconds after start. `curl -fsS http://127.0.0.1:8501/_stcore/health` printed `ok`. The page at http://127.0.0.1:8501 showed Model Pulse: Samples 474, Drop rate 14%, Late flag rate 0%, “Orders picked up over the last hour,” and “Waiting for a checkpoint on disk.” That last line is expected. `/data/models` is empty, and the default publish threshold is 2000 labeled rows.
+
+This start’s simulator log was `new orders arrived: 50 rows -> orders-20260928T193519-11050854.csv`. `docker compose exec simulator ls /data/raw` listed that file along with older CSVs already on the volume. `docker compose exec simulator id` printed uid 0, because exec skips the entrypoint. The service process itself was uid 1000.
+
+`make docker-down` removed the containers. `docker compose ps` was empty, port 8501 was free, and the volume `dashbite_dashbite-data` was still there.
+
+## Tests and setup
+
+`make test` passed 40 tests on the host (Python 3.9.6). After the image rebuild, `make docker-test` passed the same 40 tests on Python 3.11.16 in `dashbite:local`. The container run also printed 8 SciPy deprecation warnings from scikit-learn’s logistic fit. They did not fail the suite.
+
+`make run` is still the non-Docker demo. Port 8501 was free before `make docker-up`, so the dashboard container could bind it. A heartbeat older than 45 seconds is the unhealthy threshold in Compose, and the default poll is 15 seconds.
+
+No corrections were required, so there was nothing to rerun after a fix. `docs/plan.md` is unchanged.
+
+---
+
+**User**
+
+we only have 40 tests total correct? so they all passed?
+
+---
+
+**Cursor**
+
+Yes. The suite is 40 tests, and all 40 passed both times.
+
+`make test` on the host collected 40 tests and reported 40 passed. `make docker-test` in the `dashbite:local` image collected the same 40 and reported 40 passed. The container run also printed 8 SciPy deprecation warnings from the logistic-regression fit; those did not fail any test.
+
+---
+
+**User**
+
+how well do our test cases test our project in your opinion?
+
+---
+
+**Cursor**
+
+I’ll look at the test suite against what the pipeline and containers actually do, then give a straight opinion on the coverage and the gaps.
+
+They test the pipeline's decisions well, and they barely test the running system. For this project that is a good split, with one hole that already mattered.
+
+The 40 tests lock the behavior that would silently change a demo: column headers, the classroom defaults (`2000`, `50`, `15`), the `0.5` late cutoff, "newest checkpoint" by version number, no prediction file when no model exists, a second score that does not duplicate, train versions that do not overwrite, the cursor rebuild versus a split file, and the three KPI labels. Stages are checked by reading their imports, so infer cannot quietly start importing train. One integration test actually chains publish, score, and the pulse view on temporary files. The suite also runs in about a second, on the host and inside the image.
+
+What they do not see is a process that stays up. Nothing starts the poll loops, nothing runs `make run` or `make stop`, and nothing renders the Streamlit page. The container tests read `docker-compose.yml` and `docker-entrypoint.sh` as text. They check that the script says `setpriv` and does not say `runuser`. They never start a container or send Docker's stop signal. That is why all 40 could pass while the old entrypoint still killed the worker. `pipeline.health` is also untested as a command; only the freshness helper underneath it is.
+
+A few smaller edges are thin too. Peak hours are checked at 8, 12, and 18, not at the boundaries 11, 13, 14, 17, 20, and 21. The simulator test checks a clean row and a batch of 50, not that messy cells actually show up. The empty-dashboard axis check is written so it passes even when there are no points.
+
+So: strong tests for the file handoff and the rules in `docs/plan.md`. Weak tests for "is the container actually the process we think it is." The manual smoke is what covers that second part, and it has to, because the suite cannot.
+
+---
+
+**User**
+
+what test cases would you reccomend building? we can implement those if there are any with a plan which will be updated in the plan.md doc. IF nothing, then that is okay
+
+---
+
+**Cursor**
+
+I’ll check the rules the suite already locks before recommending anything new, so the list is only the gaps that are worth a test.
+
+Four small tests are worth adding. I would not add a Docker, Streamlit, or `make run` test to the suite.
+
+The container stop path stays a manual smoke check. Pytest can read the entrypoint script, which it already does, and it still cannot see Docker’s signal. A test that starts Compose would be slow and would mostly repeat the smoke you already ran.
+
+These four would lock rules the current 40 tests leave open:
+
+1. **Health command exit codes.** `pipeline.health` is what Compose runs. The freshness helper is tested, and the command is not. A fresh heartbeat file should exit 0. A missing file and a file older than 45 seconds should exit 1. That is the check that marks a worker unhealthy.
+
+2. **Peak-hour edges.** `PEAK_HOURS` is `{11, 12, 13, 17, 18, 19, 20}`. The suite checks hours 8, 12, and 18. One test should lock the boundaries: 10 and 14 and 16 and 21 are off-peak, and 11, 13, 17, and 20 are peak.
+
+3. **A messy simulator row.** `build_row(..., messy=True)` should put `""` or `"n/a"` in exactly one field other than `order_id`. The batch-size test only builds clean rows, so the messy-cell rule can disappear without a failure.
+
+4. **One class does not publish.** Enough rows that are all on-time, or all late, should leave `maybe_publish` with no checkpoint and no `train_cursor.json`. The suite covers the opposite case, where an all-on-time batch still publishes because older rows contain both labels.
+
+If that file is touched anyway, the empty-dashboard assertion in `test_view_model_has_three_kpis_and_human_axes` should require the axis names only when points exist, and should not end in `else True`. That line passes for an empty chart.
+
+I am in Ask mode, so I cannot append this to `docs/plan.md`. Switch to Agent mode and ask for an architect pass if you want that stage written there before anyone implements it.
+
+---
+
+**User**
+
+I dont like the 3rd test case since we already include one for messy data, but we should implement the other 3.
+
+---
+
+**Cursor**
+
+The messy-row test stays out. The other three lock rules the suite does not cover yet, and they can be added without changing how the pipeline runs.
+
+---
+
+**User**
+
+Implement the plan as specified, it is attached for your reference. Do NOT edit the plan file itself.
+
+To-do's from the plan have already been created. Do not create them again. Mark them as in_progress as you work, starting with the first one. Don't stop until you have completed all the to-dos.
+
+---
+
+**Cursor**
+
+I'll append the stage to `docs/plan.md`, then add the three tests and run the suite.
+
+The one-class path returns before it writes a checkpoint or a cursor. I'll record that in the plan, then add the three tests.
+
+Stage 9 is in `docs/plan.md`, and the three tests are in the suite. `make test` collected 43 tests and all 43 passed.
+
+- The health command returns normally when the simulator heartbeat is fresh, and exits 1 when that file is missing or older than 45 seconds.
+- Hours 10, 14, 16, and 21 stay off-peak. Hours 11, 13, 17, and 20 stay peak.
+- A batch of only on-time rows, past the training threshold, publishes no checkpoint and writes no `train_cursor.json`.
+
+The pipeline code is unchanged. Earlier stages in `docs/plan.md` were left as they were.
+
+---
+
+**User**
+
+good, now retest our program and deliver the final result of the testing phase
+
+---
+
+**Cursor**
+
+The three new tests are already in the tree. I’ll rerun the suite on the host and in the image, then give the testing-phase result.
+
+The testing phase passes. After the three new checks were added, both gates were run again: **43 passed** on the host and **43 passed** in the container.
+
+`make test` on the host (Python 3.9.6) collected 43 tests and reported 43 passed. The image was rebuilt so it includes those tests, then `make docker-test` collected the same 43 on Python 3.11.16 inside `dashbite:local` and reported 43 passed, with 8 SciPy deprecation warnings from the logistic-regression fit. Those warnings did not fail any test.
+
+The three additions are in that count:
+
+- The health command returns normally on a fresh heartbeat and exits 1 when the file is missing or older than 45 seconds.
+- Peak hours stay on at 11, 13, 17, and 20, and off at 10, 14, 16, and 21.
+- A batch of only on-time rows, past the training threshold, publishes no checkpoint and writes no cursor.
+
+The earlier container check still stands, because this pass did not change the pipeline. `make docker-up` started all five services healthy, the dashboard health URL printed `ok`, and this start’s simulator log showed a new `new orders arrived` line. With a 60-second poll, `docker compose stop -t 15 simulator` logged `simulator stopped` and exited 0 in 0.15 seconds. Preprocess, train, infer, and the dashboard also exited 0. `make docker-down` removed the containers and kept the volume `dashbite_dashbite-data`. `make run` is still the non-Docker demo.
+
+No further corrections came out of this retest.
+
+---
+
+**User**
+
+Now our test suite is more complete in its overall testing behavior correct?
+
+---
+
+**Cursor**
+
+Yes. The suite now locks three behaviors it used to leave open, and the count went from 40 tests to 43, all passing.
+
+- The health command itself exits 0 on a fresh heartbeat and exits 1 when the file is missing or older than 45 seconds. Compose uses that exit code.
+- Peak hours are checked at the edges: on at 11, 13, 17, and 20, and off at 10, 14, 16, and 21.
+- A first training batch that is only on-time, past the row threshold, publishes no checkpoint and writes no cursor.
+
+The live container stop is still outside this suite. Pytest can see that the entrypoint script says `setpriv`. It still does not send Docker’s stop signal. That check stays the manual one from the Stage 7 smoke.
+
+===== TRANSCRIPT END =====

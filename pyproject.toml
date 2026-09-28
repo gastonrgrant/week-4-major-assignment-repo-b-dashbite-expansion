@@ -1,0 +1,29 @@
+[project]
+name = "dashbite"
+version = "0.1.0"
+description = "DashBite late-order prediction demo"
+requires-python = ">=3.9"
+dependencies = [
+  "joblib>=1.3",
+  "scikit-learn>=1.3,<1.7",
+  "streamlit>=1.32,<1.41",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["pipeline*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+markers = [
+  "unit: fast tests of pure behavior",
+  "regression: locks classroom defaults and schemas",
+  "integration: tests that read and write files",
+]

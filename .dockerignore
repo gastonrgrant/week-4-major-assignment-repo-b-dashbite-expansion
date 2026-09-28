@@ -1,0 +1,9 @@
+.venv
+data
+.logs
+.git
+.pytest_cache
+**/__pycache__
+*.egg-info
+docs
+*.plan.md
